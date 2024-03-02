@@ -1,151 +1,81 @@
 package main
 
 import (
-    "errors"
-    "flag"
-    "log"
-    "math"
-    "net"
-    "net/netip"
-    "os"
-    "os/signal"
-    "periph.io/x/conn/v3/physic"
-    "periph.io/x/conn/v3/spi"
-    "periph.io/x/conn/v3/spi/spireg"
-    "periph.io/x/host/v3"
+	"flag"
+	"os"
+	"os/signal"
+
+	"github.com/stefan-muehlebach/ledgrid"
 )
 
 type colorType int
 
 const (
-    red colorType = iota
-    green
-    blue
+	red colorType = iota
+	green
+	blue
 )
 
 const (
-    defPort       = 5333
-    defGammaRed   = 3.0
-    defGammaGreen = 3.0
-    defGammaBlue  = 3.0
-    defBaud       = 4_000_000
+	defPort       = 5333
+	defGammaRed   = 3.0
+	defGammaGreen = 3.0
+	defGammaBlue  = 3.0
+	defBaud       = 2_000_000
+	defUseTCP     = false
 
-    bufferSize = 1024
+	bufferSize = 1024
 )
 
 func main() {
-    var port uint
-    var baud int
-    var gammaValue [3]float64
+	var port uint
+	var baud int
+	var gammaValue [3]float64
 
-    var spiDevFile string = "/dev/spidev0.0"
-    var spiBaud physic.Frequency
+	// var gamma [3][256]byte
+	// var err error
+	// var onRaspi bool
 
-    var gamma [3][256]byte
-    var err error
-    var addrPort netip.AddrPort
-    var udpAddr *net.UDPAddr
-    var udpConn *net.UDPConn
-    var buffer []byte
-    var len int
-    var spiPort spi.PortCloser
-    var spiConn spi.Conn
+	// var addrPort netip.AddrPort
+	// var udpAddr *net.UDPAddr
+	// var udpConn *net.UDPConn
+	// var buffer []byte
+	// var len int
 
-    // Verarbeite als erstes die Kommandozeilen-Optionen
-    //
-    flag.UintVar(&port, "port", defPort, "UDP port")
-    flag.IntVar(&baud, "baud", defBaud, "SPI baudrate in Hz")
-    flag.Float64Var(&gammaValue[red], "gammaRed", defGammaRed,
-            "Gamma value for red")
-    flag.Float64Var(&gammaValue[green], "gammaGreen", defGammaGreen,
-            "Gamma value for green")
-    flag.Float64Var(&gammaValue[blue], "gammaBlue", defGammaBlue,
-            "Gamma value for blue")
-    flag.Parse()
+	var spiDevFile string = "/dev/spidev0.0"
+	// var spiBaud physic.Frequency
+	// var spiPort spi.PortCloser
+	// var spiConn spi.Conn
 
-    spiBaud = physic.Frequency(baud)
+	var pixelServer *ledgrid.PixelServer
 
-    // Anschliessend wird die Tabelle fuer die Farbwertkorrektur erstellt.
-    //
-    for color := red; color <= blue; color++ {
-        for i := 0; i < 256; i++ {
-            gamma[color][i] = byte(255.0 * math.Pow(float64(i)/255.0,
-                    gammaValue[color]))
-        }
-    }
+	// Verarbeite als erstes die Kommandozeilen-Optionen
+	//
+	flag.UintVar(&port, "port", defPort, "UDP port")
+	flag.IntVar(&baud, "baud", defBaud, "SPI baudrate in Hz")
+	flag.Float64Var(&gammaValue[red], "red", defGammaRed,
+		"Gamma value for red")
+	flag.Float64Var(&gammaValue[green], "green", defGammaGreen,
+		"Gamma value for green")
+	flag.Float64Var(&gammaValue[blue], "blue", defGammaBlue,
+		"Gamma value for blue")
+	flag.Parse()
 
-    // Dann erstellen wir einen Buffer fuer die via Netzwerk eintreffenden
-    // Daten. 1kB sollten aktuell reichen (entspricht rund 340 RGB-Werten).
-    //
-    buffer = make([]byte, bufferSize)
+	pixelServer = ledgrid.NewPixelServer(port, spiDevFile, baud)
+	pixelServer.SetGamma(0, gammaValue[red])
+	pixelServer.SetGamma(1, gammaValue[green])
+	pixelServer.SetGamma(2, gammaValue[blue])
 
-    // Dann wird der SPI-Bus initialisiert.
-    //
-    _, err = host.Init()
-    if err != nil {
-        log.Fatal(err)
-    }
-    spiPort, err = spireg.Open(spiDevFile)
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer spiPort.Close()
-    spiConn, err = spiPort.Connect(spiBaud*physic.Hertz, spi.Mode0, 8)
-    if err != nil {
-        log.Fatal(err)
-    }
+	// Damit der Daemon kontrolliert beendet werden kann, installieren wir
+	// einen Handler fuer das INT-Signal, welches bspw. durch Ctrl-C erzeugt
+	// wird oder auch von systemd beim Stoppen eines Services verwendet wird.
+	//
+	go func() {
+		sigChan := make(chan os.Signal)
+		signal.Notify(sigChan, os.Interrupt)
+		<-sigChan
+		pixelServer.Close()
+	}()
 
-    // Jetzt wird der UDP-Port geoeffnet, resp. eine lesende Verbindung
-    // dafuer erstellt.
-    //
-    addrPort = netip.AddrPortFrom(netip.IPv4Unspecified(), uint16(port))
-    if !addrPort.IsValid() {
-        log.Fatalf("Invalid address or port")
-    }
-    udpAddr = net.UDPAddrFromAddrPort(addrPort)
-    udpConn, err = net.ListenUDP("udp", udpAddr)
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Damit der Daemon kontrolliert beendet werden kann, installieren wir
-    // einen Handler fuer das INT-Signal, welches bspw. durch Ctrl-C erzeugt
-    // wird oder auch von systemd beim Stoppen eines Services verwendet wird.
-    //
-    go func() {
-        sigChan := make(chan os.Signal)
-        signal.Notify(sigChan, os.Interrupt)
-        <-sigChan
-        udpConn.Close()
-    }()
-
-    // Dies schliesslich ist die Schleife, welche das Hauptprogramm ausmacht.
-    // Sie laeuft endlos, resp. wird erst beendet, wenn der Signal-Handler
-    // (siehe oben) die UDP-Verbindung schliesst und damit die Methode
-    // Read() zum Abbruch zwingt.
-    //
-    for {
-        len, err = udpConn.Read(buffer)
-        if err != nil {
-            if errors.Is(err, net.ErrClosed) {
-                break
-            }
-            log.Fatal(err)
-        }
-        for i := 0; i < len; i += 3 {
-            buffer[i+0] = gamma[red][buffer[i+0]]
-            buffer[i+1] = gamma[red][buffer[i+1]]
-            buffer[i+2] = gamma[red][buffer[i+2]]
-        }
-        spiConn.Tx(buffer[:len], nil)
-    }
-
-    // Vor dem Beenden des Programms werden alle LEDs Schwarz geschaltet
-    // damit das Panel dunkel wird.
-    //
-    for i := range buffer {
-        buffer[i] = 0x00
-    }
-    spiConn.Tx(buffer, nil)
+	pixelServer.Handle()
 }
-
