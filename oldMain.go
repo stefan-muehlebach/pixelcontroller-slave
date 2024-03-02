@@ -151,8 +151,8 @@ func main() {
 		}
 		for i := 0; i < len; i += 3 {
 			buffer[i+0] = gamma[red][buffer[i+0]]
-			buffer[i+1] = gamma[red][buffer[i+1]]
-			buffer[i+2] = gamma[red][buffer[i+2]]
+			buffer[i+1] = gamma[green][buffer[i+1]]
+			buffer[i+2] = gamma[blue][buffer[i+2]]
 		}
         if onRaspi {
 		    if err = spiConn.Tx(buffer[:len], nil); err != nil {
